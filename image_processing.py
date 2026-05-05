@@ -39,8 +39,14 @@ class AdvancedVisionApp(ctk.CTk):
         self.btn_undo = ctk.CTkButton(self.sidebar, text="UNDO LAST STEP", fg_color="#e67e22", command=self.undo_last)
         self.btn_undo.pack(pady=5, padx=20, fill="x")
 
+        self.btn_reset = ctk.CTkButton(self.sidebar, text="RESET TO ORIGINAL", fg_color="#c0392b", command=self.reset_image)
+        self.btn_reset.pack(pady=5, padx=20, fill="x")
+
         self.btn_save = ctk.CTkButton(self.sidebar, text="SAVE RESULT", state="disabled", command=self.save_image)
         self.btn_save.pack(pady=5, padx=20, fill="x")
+
+        self.status_label = ctk.CTkLabel(self.sidebar, text="No filter applied", text_color="#95a5a6", font=ctk.CTkFont(size=11))
+        self.status_label.pack(pady=(10, 0))
 
         # Geometric Section (Section 7 & 10)
         self.add_section("GEOMETRIC OPERATIONS")
@@ -53,12 +59,18 @@ class AdvancedVisionApp(ctk.CTk):
         self.create_edit_btn("Median Blur", "median")
         self.create_edit_btn("Gaussian Blur", "gaussian")
 
+        # Add Noise
+        self.add_section("ADD NOISE")
+        self.create_edit_btn("Gaussian Noise", "noise_gaussian")
+        self.create_edit_btn("Salt & Pepper", "noise_sp")
+
         # Coloring (Section 6, 7, 10 & NumPy)
         self.add_section("COLORING & INVERSION")
         self.create_edit_btn("Grayscale", "gray")
         self.create_edit_btn("Invert (Bitwise)", "invert_bit")
         self.create_edit_btn("Invert (NumPy)", "invert_np")
         self.create_edit_btn("Boost Saturation", "boost")
+        self.create_edit_btn("Brightness", "brightness")
 
         # Filters (Section 7 & 10)
         self.add_section("FILTERS")
@@ -92,7 +104,10 @@ class AdvancedVisionApp(ctk.CTk):
     def load_image(self):
         path = filedialog.askopenfilename()
         if path:
-            self.original_pil = Image.open(path).convert("RGB") #
+            img = Image.open(path).convert("RGB")
+            # Resize large images to max 1000x1000 to prevent freezing and speed up processing
+            img.thumbnail((1000, 1000), Image.Resampling.LANCZOS)
+            self.original_pil = img
             self.current_processed_pil = self.original_pil.copy()
             self.history = [self.original_pil.copy()]
             self.update_view(is_input=True)
@@ -104,6 +119,14 @@ class AdvancedVisionApp(ctk.CTk):
             self.history.pop()
             self.current_processed_pil = self.history[-1].copy()
             self.update_view(is_input=False)
+            self.status_label.configure(text="↩ Undo")
+
+    def reset_image(self):
+        if self.original_pil:
+            self.current_processed_pil = self.original_pil.copy()
+            self.history = [self.original_pil.copy()]
+            self.update_view(is_input=False)
+            self.status_label.configure(text="✔ Reset to original")
 
     def save_image(self):
         path = filedialog.asksaveasfilename(defaultextension=".png")
@@ -113,6 +136,10 @@ class AdvancedVisionApp(ctk.CTk):
     def apply_cumulative_filter(self, mode):
         if not self.current_processed_pil: return
 
+        # Convert to RGB to avoid shape errors with grayscale images
+        if self.current_processed_pil.mode != "RGB":
+            self.current_processed_pil = self.current_processed_pil.convert("RGB")
+            
         # OpenCV Conversion
         cv_img = cv2.cvtColor(np.array(self.current_processed_pil), cv2.COLOR_RGB2BGR)
 
@@ -131,7 +158,23 @@ class AdvancedVisionApp(ctk.CTk):
 
         # 2. Noise & Filters
         elif mode == "median":
-            res = cv2.medianBlur(cv_img, 7) #
+            res = cv2.medianBlur(cv_img, 5) #
+            self.current_processed_pil = Image.fromarray(cv2.cvtColor(res, cv2.COLOR_BGR2RGB))
+        elif mode == "gaussian":
+            res = cv2.GaussianBlur(cv_img, (5, 5), 0)
+            self.current_processed_pil = Image.fromarray(cv2.cvtColor(res, cv2.COLOR_BGR2RGB))
+        elif mode == "noise_gaussian":
+            noise = np.random.normal(0, 25, cv_img.shape).astype(np.float32)
+            noisy = cv2.add(cv_img.astype(np.float32), noise)
+            res = np.clip(noisy, 0, 255).astype(np.uint8)
+            self.current_processed_pil = Image.fromarray(cv2.cvtColor(res, cv2.COLOR_BGR2RGB))
+        elif mode == "noise_sp":
+            res = cv_img.copy()
+            prob = 0.05
+            white_noise = np.random.rand(res.shape[0], res.shape[1]) < (prob / 2)
+            black_noise = np.random.rand(res.shape[0], res.shape[1]) < (prob / 2)
+            res[white_noise] = [255, 255, 255]
+            res[black_noise] = [0, 0, 0]
             self.current_processed_pil = Image.fromarray(cv2.cvtColor(res, cv2.COLOR_BGR2RGB))
         elif mode == "canny":
             res = cv2.Canny(cv_img, 100, 200) #
@@ -151,11 +194,15 @@ class AdvancedVisionApp(ctk.CTk):
             res_array = 255 - np.array(self.current_processed_pil)
             self.current_processed_pil = Image.fromarray(res_array)
         elif mode == "boost":
-            enhancer = ImageEnhance.Color(self.current_processed_pil) #
+            enhancer = ImageEnhance.Color(self.current_processed_pil)
+            self.current_processed_pil = enhancer.enhance(1.5)
+        elif mode == "brightness":
+            enhancer = ImageEnhance.Brightness(self.current_processed_pil)
             self.current_processed_pil = enhancer.enhance(1.5)
 
         self.history.append(self.current_processed_pil.copy())
         self.update_view(is_input=False)
+        self.status_label.configure(text=f"✔ Applied: {mode.replace('_', ' ').title()}")
 
     def update_view(self, is_input=True):
         img = self.original_pil if is_input else self.current_processed_pil
